@@ -1,0 +1,107 @@
+name: native-resign-upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset_id:
+        description: "unsigned ipa release asset id"
+        required: true
+      build_num:
+        description: "CFBundleVersion"
+        required: false
+        default: "27"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: env
+        run: |
+          xcodebuild -version || true
+          sw_vers
+          df -h / | tail -1
+
+      - name: fetch ipa
+        env:
+          T: ${{ github.token }}
+          AID: ${{ inputs.asset_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/w"
+          curl -fSL -H "Authorization: Bearer $T" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/$AID" \
+            -o "$RUNNER_TEMP/src.ipa"
+          ls -lh "$RUNNER_TEMP/src.ipa"
+
+      - name: import signing assets
+        env:
+          P12B64: ${{ secrets.SIGN_P12_B64 }}
+          P12PW: ${{ secrets.SIGN_P12_PASS }}
+          PROFB64: ${{ secrets.PROFILES_TGZ_B64 }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          printf '%s' "$P12B64" | base64 --decode > sign.p12
+          printf '%s' "$PROFB64" | base64 --decode > profiles.tgz
+          mkdir -p profiles && tar xzf profiles.tgz -C profiles
+          ls profiles
+          KC_PW="$(uuidgen)"
+          security create-keychain -p "$KC_PW" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$KC_PW" build.keychain
+          security import sign.p12 -k build.keychain -P "$P12PW" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" build.keychain >/dev/null
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning
+
+      - name: unpack
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -p work
+          unzip -q src.ipa -d work
+          ls work/Payload
+
+      - name: resign
+        env:
+          WORK_DIR: ${{ runner.temp }}/work
+          PROF_DIR: ${{ runner.temp }}/profiles
+          SIGN_IDENTITY: "Apple Distribution: guoping ni (9VSZ8M2JL5)"
+          BUILD_NUM: ${{ inputs.build_num }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          cp "$GITHUB_WORKSPACE/resign.py" .
+          python3 resign.py
+          ls -lh out.ipa
+
+      - name: api key
+        env:
+          K64: ${{ secrets.ASC_KEY_P8_B64 }}
+          KID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$K64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          echo KEY_OK
+
+      - name: upload
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcrun altool --upload-app -f "$RUNNER_TEMP/out.ipa" -t ios \
+            --apiKey "$KID" --apiIssuer "$ISS" --verbose 2>&1 | tee "$RUNNER_TEMP/altool.log"
+
+      - name: result
+        if: always()
+        run: |
+          tail -60 "$RUNNER_TEMP/altool.log" 2>/dev/null || true
