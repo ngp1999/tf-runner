@@ -10,6 +10,10 @@ on:
         description: "CFBundleVersion"
         required: false
         default: "27"
+      substrate_asset:
+        description: "pre-signed CydiaSubstrate.framework asset id"
+        required: false
+        default: "801277334"
 
 permissions:
   contents: read
@@ -67,6 +71,19 @@ jobs:
           mkdir -p work
           unzip -qo src.ipa -d work
           ls work/Payload
+
+      - name: overlay substrate
+        env:
+          T: ${{ github.token }}
+          SAID: ${{ inputs.substrate_asset }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fSL -H "Authorization: Bearer $T" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/$SAID" -o sub.tgz
+          rm -rf work/Payload/WeChat.app/Frameworks/CydiaSubstrate.framework
+          tar xzf sub.tgz -C work/Payload/WeChat.app/Frameworks/
+          ls -la work/Payload/WeChat.app/Frameworks/CydiaSubstrate.framework
 
       - name: resign
         env:
