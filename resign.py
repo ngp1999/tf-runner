@@ -138,6 +138,10 @@ def main():
     olds = machos(app)
     log("mach-o files:", len(olds))
     for p in olds:
+        try:
+            os.chmod(p, os.stat(p).st_mode | 0o111)
+        except Exception as e:
+            log("chmod fail", p, e)
         run(["codesign", "--remove-signature", p], check=False)
 
     items = collect(app)
