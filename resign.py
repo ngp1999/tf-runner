@@ -60,6 +60,26 @@ def set_build(path):
     os.chmod(p, st.st_mode)
 
 
+
+MAGICS = {b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe",
+          b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
+
+
+def machos(root):
+    out = []
+    for dp, _, fs in os.walk(root):
+        for f in fs:
+            p = os.path.join(dp, f)
+            try:
+                with open(p, "rb") as fh:
+                    m = fh.read(4)
+            except Exception:
+                continue
+            if m in MAGICS:
+                out.append(p)
+    return out
+
+
 def collect(app):
     """收集所有需要签名的对象：dylib 文件、framework/appex/app 目录。"""
     items = []
@@ -114,6 +134,12 @@ def main():
     empty = write_ent({}, os.path.join(ent_dir, "empty.plist"))
 
     # 4) 由内到外签名
+    # 3.5) 清掉旧签名（带尾部填充的二进制必须先清，否则 codesign 内部报错）
+    olds = machos(app)
+    log("mach-o files:", len(olds))
+    for p in olds:
+        run(["codesign", "--remove-signature", p], check=False)
+
     items = collect(app)
     items.sort(key=lambda p: p.count(os.sep), reverse=True)
     log("objects to sign:", len(items))
