@@ -76,6 +76,8 @@ def machos(root):
             except Exception:
                 continue
             if m in MAGICS:
+                if "CydiaSubstrate.framework" in p:
+                    continue
                 out.append(p)
     return out
 
@@ -86,7 +88,7 @@ def collect(app):
     for root, dirs, files in os.walk(app):
         for d in list(dirs):
             full = os.path.join(root, d)
-            if d.endswith(".framework") or d.endswith(".appex"):
+            if (d.endswith(".framework") or d.endswith(".appex")) and "CydiaSubstrate.framework" not in full:
                 items.append(full)
         for f in files:
             if f.endswith(".dylib"):
