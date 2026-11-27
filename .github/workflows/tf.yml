@@ -1,0 +1,90 @@
+name: tf-upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset_id:
+        description: "release asset id"
+        required: true
+      want_sha256:
+        description: "expected sha256"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: env
+        run: |
+          xcodebuild -version || true
+          sw_vers
+          df -h / | tail -1
+
+      - name: fetch ipa
+        env:
+          T: ${{ secrets.IPA_TOKEN }}
+          AID: ${{ inputs.asset_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/w"
+          curl -fSL -H "Authorization: Bearer $T" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/ngp1999/wechathelper-tf/releases/assets/$AID" \
+            -o "$RUNNER_TEMP/w/app.ipa"
+          ls -lh "$RUNNER_TEMP/w/app.ipa"
+          echo "IPA=$RUNNER_TEMP/w/app.ipa" >> "$GITHUB_ENV"
+
+      - name: verify
+        env:
+          WANT: ${{ inputs.want_sha256 }}
+        run: |
+          set -euo pipefail
+          GOT=$(shasum -a 256 "$IPA" | awk '{print $1}')
+          echo "got  $GOT"
+          echo "want $WANT"
+          [ "$GOT" = "$WANT" ] && echo "SHA256 OK" || { echo "SHA256 MISMATCH"; exit 1; }
+          unzip -t "$IPA" >/dev/null && echo "ZIP OK"
+          unzip -o -q "$IPA" "Payload/WeChat.app/Info.plist" -d "$RUNNER_TEMP/chk"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$RUNNER_TEMP/chk/Payload/WeChat.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$RUNNER_TEMP/chk/Payload/WeChat.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$RUNNER_TEMP/chk/Payload/WeChat.app/Info.plist"
+
+      - name: api key
+        env:
+          K64: ${{ secrets.ASC_KEY_P8_B64 }}
+          KID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$K64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          head -1 "$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          echo KEY_OK
+
+      - name: upload altool
+        id: a
+        continue-on-error: true
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$KID" --apiIssuer "$ISS" --verbose 2>&1 | tee "$RUNNER_TEMP/altool.log"
+
+      - name: upload itms
+        if: steps.a.outcome == 'failure'
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcrun iTMSTransporter -m upload -assetFile "$IPA" -apiKey "$KID" -apiIssuer "$ISS" -v informational 2>&1 | tee "$RUNNER_TEMP/itms.log"
+
+      - name: result
+        if: always()
+        run: |
+          echo "===== altool ====="; tail -60 "$RUNNER_TEMP/altool.log" 2>/dev/null || true
+          echo "===== itms ====="; tail -60 "$RUNNER_TEMP/itms.log" 2>/dev/null || true
