@@ -144,6 +144,18 @@ def main():
             log("chmod fail", p, e)
         run(["codesign", "--remove-signature", p], check=False)
 
+    # 删掉残留的旧签名目录，避免 codesign 内部报错
+    removed = 0
+    for dp, dirs, fs in os.walk(app):
+        if "_CodeSignature" in dirs:
+            shutil.rmtree(os.path.join(dp, "_CodeSignature"), ignore_errors=True)
+            removed += 1
+            dirs.remove("_CodeSignature")
+        if "SC_Info" in dirs:
+            shutil.rmtree(os.path.join(dp, "SC_Info"), ignore_errors=True)
+            dirs.remove("SC_Info")
+    log("removed _CodeSignature dirs:", removed)
+
     items = collect(app)
     items.sort(key=lambda p: p.count(os.sep), reverse=True)
     log("objects to sign:", len(items))
