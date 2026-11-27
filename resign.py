@@ -183,6 +183,7 @@ def main():
     out = os.path.abspath("out.ipa")
     if os.path.exists(out):
         os.remove(out)
+    os.chdir(WORK)
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", "Payload", out], check=True)
     log("ipa:", out, os.path.getsize(out))
     print("RESIGN_OK", out, os.path.getsize(out))
